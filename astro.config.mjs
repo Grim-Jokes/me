@@ -5,6 +5,6 @@ import sitemap from '@astrojs/sitemap';
 
 // https://astro.build/config
 export default defineConfig({
-	site: 'https://www.danszekely.com',
+	site: 'https://wwww.danszekely.com',
 	integrations: [mdx(), sitemap()],
 });
