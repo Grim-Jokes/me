@@ -1,0 +1,31 @@
+---
+const { pros, cons } = Astro.props;
+import "./ProConTable.css";
+---
+
+<table class="pros-cons-table">
+  <thead>
+    <tr>
+      <th>Pros</th>
+      <th>Cons</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        <ul>
+          {pros?.map((pro: string[]) => (
+            <li>{pro}</li>
+          ))}
+        </ul>
+      </td>
+      <td>
+        <ul>
+          {cons?.map((con: string[]) => (
+            <li>{con}</li>
+          ))}
+        </ul>
+      </td>
+    </tr>
+  </tbody>
+</table>

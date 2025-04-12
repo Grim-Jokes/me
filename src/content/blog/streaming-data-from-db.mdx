@@ -1,0 +1,133 @@
+---
+title: Creating an API endpoint that streams data from the DB
+description: How to deal with returning large data sets from the database
+pubDate: 2023-02-20
+---
+import Table from "../../components/ProConTable.astro";
+
+
+I am working with a microservice and one of the most significant points of contention I've run into is CSV Download for a user with over 1 million rows. It should be easy to make CSV Downloads available, right?
+
+# Existing Architecture
+
+Here is the existing architecture. Before you ask, yes it's a micro-service, though the micro part is becoming debatable. This service "aggregates" the data and gives users the option to export their activity as a CSV.
+
+![](https://fullstack179835491.wordpress.com/wp-content/uploads/2023/02/image.png)
+
+
+On top of that, the "CSV" (note the quote) is returned as JSON of all things. Why? Probably because GraphQL doesn't really support cursor-based responses. Streaming is a relatively new feature that I have not had a chance to really look into.
+
+After spending an extensive amount of time optimizing the database, it seemed like nothing I did would work as the user with 700k+ rows would take 30+ seconds to get the data on PostgreSQL. On top of it all, all the data is in JSONB. To make matters worse, we sorted the data by the JSONB fields.
+
+# Sort Speed
+
+For example:
+```
+CREATE INDEX table_updatedAt ON table (data_to_timestamp(data->>'updated'::text) DESC)
+```
+
+Then the subsequent query would have to be like this:
+```
+SELECT * FROM table ORDER BY data_to_timestamp(data->>'updated'::text) DESC
+```
+
+# Async Flow
+
+Due to the size of the data, the proposed solution was something called the "async flow" where the user requests to download a file. They get added to some kind of queue and magically a link to a file will be emailed to them whenever possible.
+
+So if we were to draw this out it would be something like this, approximately:
+![](https://fullstack179835491.wordpress.com/wp-content/uploads/2023/02/image-1.png)
+
+The user makes a request to get their CSV and then has to wait an undermined amount of time to get the file, or link to it, in an email.
+
+In summary: 
+
+- The user makes a request for the file
+- They get added to some sort of queue
+- We show them their position in the queue so they know they're not forgotten (or that the export is not broken)
+- The file then gets uploaded to s3 when it is the user's turn to have their request processed
+- When complete, we will notify the user by sending an email
+
+# Streaming
+
+The "Async" flow doesn't sit well for me. It feels over-complicated and prone to maintenance and debugging nightmares. After spending some time reading up on how to deal with data-heavy applications, streaming came up as a very common theme. The architecture would look like this, which I am sure it will look familiar:
+
+![](https://fullstack179835491.wordpress.com/wp-content/uploads/2023/02/image-3.png)
+
+There is one problem. We're getting data as CSV and not JSON. The Graphql server is not going to like it.
+
+After spending some time playing around with it, I've discovered that we can create new endpoints/routes on the server. In essence, skip GraphQL altogether. We don't want to get rid of the server entirely because it has some important logic that the endpoint should use. We want the GraphQL server to act as an API gateway.
+
+So how do we go about doing this? Well, I got lucky on that part.
+
+Our underlying ORM is massive.js and it supports "streaming". The ORM is basically a wrapper over node-pg-cursor.
+
+Seeing as massive.js took care of most of the "plumbing" so to speak, it made sense for me to stick with this.
+
+## CSV Server
+
+```
+stream = await db.query(`SELECT * FROM table WHERE ...`, { stream: true })
+
+stream.on("data", (row) => {
+  // res is the koa response object each handler receives
+  // If the connection is broken/closed we basically close the db connection as well
+  if (!res.finished) {
+       res.write(toCSV(row))
+  }
+}
+// Some cleanup will be needed, possible but it's not important here
+stream.on("end", cleanup)
+```
+
+For Koa, we'd need to create a Piped Stream object and just pass it to ctx.body and koa will take care of the rest.
+
+```
+await verifyAuth(request)
+...
+response = await axios.get("/data/csv_path")
+response.data.on("data", (data) => response.write(data))
+...
+```
+
+Basically, we're creating a "proxy" endpoint that can deal with gateway-related issues like rate limits, and whatnot.
+
+# Pros and Cons
+## Streaming
+
+<Table
+pros={[
+    "The Browser handles everything. If a connection gets interrupted the browser can actually resume a download so that they don't have to restart.",
+    "Little to no memory usage. The rows come back as CSV and stay in memory for a few milliseconds tops. As the rows are being processed more are coming from the database.",
+    "Easier debugging. If the CSV doesn't download it will likely be a database issue.",
+    "Fewer points of failure.",
+    "Reduced load on Database. Because we pull back ~100 rows at a time, something like RDS can handle that like it is nothing.",
+    "Easier security considerations.",
+    "Easier onboarding"
+]}
+cons={[
+    "Connections to DB will stay open until the transfer is complete. This could lead to the DB running out of connections if too many people request the CSV file at once.",
+    "Requires a new GraphQL server route since GraphQL and this kind of streaming do not work properly (Need to research this more thoroughly)."
+]} 
+/>
+
+## Async
+
+<Table
+    pros={[
+        "The connection count is limited to the database",
+        "If any parts of the system will fail, then the user won't be aware of it except that the task took too long",
+        "We don't touch the GraphQL API Gateway"
+    ]}
+
+     cons={[
+        "Harder debugging. If any of the systems outside the CSV fail",
+        "More points of failure. If an email didn't get sent, where do we start investigating? How many things do we have to look at?",
+        "We need to ensure that the bucket storing the files is secure and nobody can read others` files.",
+        "Data most likely has to be streamed from the database anyway",
+        "S3 data  egress will add up, especially if the size of files will keep growing",
+        "We are paying for more communication between our services. (AWS charges per egress bytes)",
+        "Total Cost of Ownership which ties into harder debugging and time to write the code."
+    ]}
+   
+ />

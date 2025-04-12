@@ -1,1 +1,0 @@
-find ./blog -iname '*.md' -type f -exec sh -c 'echo "${0}" && pandoc ${0} -o public/${0%.md}.html' {} \;

@@ -1,0 +1,77 @@
+---
+title: "Enzyme vs React Testing Library"
+description: "Reflections on how code reviews can go awry and how to improve them for better efficiency."
+pubDate: 2020-05-24
+author: "Daniel Szekely"
+tags: ["testing", "best practices", "front-end"]
+---
+
+week I was presenting how to write unit tests for React components using Enzyme when someone pointed out that they enjoyed using React Testing Library. I didn't have an answer besides "Use it if you think it's better, we need more tests". The reasoning is that our test coverage at this time is lacking pretty hard. We're lucky if we hit ~10% coverage right now.
+
+Before I started at Ford, I've done some very limited UI unit tests. They just didn't seem that important.  I've had no real experience with Enzyme, but after some digging around their documentation and the wrapper.debug() method, I was able to cobble together something to get a passable unit test. I was floored that the way I've been writing the tests are apparently wrong according to the creator of "React Testing Library". 
+
+Apparently  RTL wants to test behaviour rather than implementation details. However, I was under the impression that I was doing the same thing by using shallow with the occasional wrapper.dive()method  calls. 
+
+I want to poop on RTL just out of principle based on how sanctimonious the creator  appears to be. I want to poop on RTL because I didn't think of using it first. But that's not who I am, I don't want to poop on ideas just because they weren't mine. I want to see what RTL has to offer before I go back with a recommendation to the teams in regards to how to actually use it, if we should use it.
+
+Actual Test Cases
+
+With that out of the way, I created a project to generate some VSCode snippets. Very simple idea that's more complex than it sounds.  The app has a textarea for input and a div with code elements for the output. Instead of writing unit tests for a few components with Enzyme, I will try to use RTL.
+
+I started off with this test case: 
+```
+import * as React from 'react';
+
+import { render } from '@testing-library/react'
+
+import { OutputPanel} from './OutputPanel';
+
+describe("OutputPanel", () => {
+    it("Should render OutputPanel", () => {
+        const text = "test\n${4}";
+        const result = render(<OutputPaneltext={text} />);
+    });
+});
+```
+A bit of a backstory: OutputPanel  is given a string as a prop and it parses and highlights the tabstops ${4} on each line. The idea is for larger snippets to be easily adjustable.  I expect 2 spans wrapped in a div. 
+
+As a first impression I'd say: If we are comparing this with enzyme, the differences are negligible so far. That's great. Now, what about the assertions? 
+
+RTL makes it clear that it  renders the entire DOM tree. So this is the equivalent of mounting in Enzyme.
+
+After doing some digging and finding https://testing-library.com/docs/dom-testing-library/api-queries#bytext I added this assertion and checked the the class name. So the above block became this: 
+```
+describe("OutputPanel", () => {
+    it("Should render OutputPanel", () => {
+        const text = "test\n${4}";
+        const result = render(<OutputPaneltext={text} />);
+        const r = result.getByText("${4}");
+
+        expect(r.className).toBe("token")
+    });
+});
+```
+Not bad for an integration test. It does appear to be a bit simpler than enzyme but not by that much. After some more reading it appears that if I want to do "shallow" rendering I'd have to mock out it's children. I think that is acceptable, actually. Enzyme's shallow mocks out the children automatically  but it's not a lot of extra steps to mock them out if we want to recreate the shallow rendering functionality. But should we?
+
+After playing around with RTL some more, I'm realizing that I'm doing something in both Enzyme and RTL that can be considered bad. I'm trying to check for a specific element/component. If that component changes then the test has a false positive failure because the component may not exist anymore.  I don't know how to feel about this as RTL author recommends that we search based on things that a user can see. So don't search by className attributes but by roles, display text.  Does asserting that the CSS className was added correctly make sense? It would have to, how else do I know if the right keyword is highlighted?
+
+After some more thought I went with this:
+```
+    it("Should render OutputPanel", () => {
+        const text = "test\n\n${4}";
+        const result = render(<OutputPanel text={text} />);
+
+        let element = result.getByText("test");
+        expect(element).toBeInTheDocument();
+
+        element = result.getByText("${4}");
+        expect(element.className).toBe("token");
+        expect(element).toBeInTheDocument();
+
+        const emptyLines = result.getAllByText("", { selector: "span" });
+        expect(emptyLines).toHaveLength(1);
+    });
+```
+This needs some work but it's good enough to assert that: "Hey, we'll highlight the ${4} keyword. test is not a keyword, and there is an empty line between the two." 
+
+I want to like this, but I can't help but think of "how is this different from Enzyme.mount (besides hook support)". All in all, if I had to go with a framework, I'd err on RTL just because React appears to be recommending them over Enzyme. Not sure when that happened but that can't be good for Enzyme.
